@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>macOS 多用户机制深度调研——保密性 / 安全性 / 后台进程行为</title>
+<meta name="description" content="macOS 多用户机制深度调研：保密性、安全性、后台进程行为 — Apple Platform Security / TN2083 / launchd / FileVault">
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f7f8fa;
+  --bg-card: #ffffff;
+  --text: #1f2328;
+  --text-soft: #59636e;
+  --border: #d1d9e0;
+  --accent: #0969da;
+  --accent-soft: #ddf4ff;
+  --code-bg: #f6f8fa;
+  --code-border: #d1d9e0;
+  --table-stripe: #f6f8fa;
+  --blockquote-border: #d1d9e0;
+  --blockquote-bg: #f6f8fa;
+  --toc-bg: #f6f8fa;
+  --shadow: 0 1px 3px rgba(31,35,40,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-soft: #161b22;
+    --bg-card: #161b22;
+    --text: #e6edf3;
+    --text-soft: #8d96a0;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent-soft: #1f6feb33;
+    --code-bg: #161b22;
+    --code-border: #30363d;
+    --table-stripe: #161b22;
+    --blockquote-border: #30363d;
+    --blockquote-bg: #161b22;
+    --toc-bg: #161b22;
+    --shadow: 0 1px 3px rgba(0,0,0,0.4);
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+               Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+}
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 32px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .toc-sidebar { position: static !important; }
+}
+.toc-sidebar {
+  position: sticky;
+  top: 32px;
+  align-self: start;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  background: var(--toc-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  font-size: 14px;
+}
+.toc-sidebar h2 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-soft);
+}
+.toc-sidebar ul { list-style: none; padding: 0; margin: 0; }
+.toc-sidebar li { margin: 4px 0; }
+.toc-h2 { font-weight: 600; }
+.toc-h3 { padding-left: 16px; font-size: 13px; color: var(--text-soft); }
+.toc-sidebar a {
+  color: var(--text);
+  text-decoration: none;
+  display: block;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.toc-sidebar a:hover { background: var(--accent-soft); color: var(--accent); }
+main { min-width: 0; }
+.hero {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 28px;
+  margin-bottom: 32px;
+}
+.hero h1 {
+  margin: 0 0 12px 0;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.hero .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+.hero .meta span {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 3px 10px;
+  border-radius: 12px;
+}
+h1 { font-size: 28px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+h2 { font-size: 24px; margin-top: 40px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+h3 { font-size: 19px; margin-top: 28px; }
+h4 { font-size: 16px; margin-top: 20px; }
+p { margin: 12px 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--blockquote-border);
+  background: var(--blockquote-bg);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-soft);
+}
+blockquote p { margin: 8px 0; }
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--code-border);
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+}
+/* Pygments 代码高亮（GitHub 风格 + 暗色自适应） */
+.codehilite { background: var(--code-bg); }
+.codehilite .k, .codehilite .kn, .codehilite .kc, .codehilite .kd,
+.codehilite .kp, .codehilite .kr, .codehilite .kt { color: #cf222e; }
+.codehilite .n, .codehilite .nf, .codehilite .nx { color: #953800; }
+.codehilite .s, .codehilite .s1, .codehilite .s2 { color: #0a3069; }
+.codehilite .c, .codehilite .c1, .codehilite .cm { color: #6e7781; font-style: italic; }
+.codehilite .nb { color: #0550ae; }
+.codehilite .mi, .codehilite .mf { color: #0550ae; }
+.codehilite .o, .codehilite .ow { color: #cf222e; }
+@media (prefers-color-scheme: dark) {
+  .codehilite .k, .codehilite .kn, .codehilite .kc, .codehilite .kd,
+  .codehilite .kp, .codehilite .kr, .codehilite .kt { color: #ff7b72; }
+  .codehilite .n, .codehilite .nf, .codehilite .nx { color: #d2a8ff; }
+  .codehilite .s, .codehilite .s1, .codehilite .s2 { color: #a5d6ff; }
+  .codehilite .c, .codehilite .c1, .codehilite .cm { color: #8b949e; }
+  .codehilite .nb { color: #79c0ff; }
+  .codehilite .mi, .codehilite .mf { color: #79c0ff; }
+  .codehilite .o, .codehilite .ow { color: #ff7b72; }
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+  font-size: 14px;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { background: var(--table-stripe); font-weight: 600; }
+tbody tr:nth-child(even) { background: var(--table-stripe); }
+ul, ol { padding-left: 24px; }
+li { margin: 4px 0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+.footer {
+  margin-top: 64px;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-soft);
+  border-top: 1px solid var(--border);
+}
+.footer a { color: var(--text-soft); }
+.back-to-top {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 18px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transition: opacity 0.2s;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.back-to-top.visible { opacity: 0.85; }
+.back-to-top:hover { opacity: 1; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="toc-sidebar">
+<nav class="toc"><h2>📑 目录</h2><ul>
+<li class="toc-h2"><a href="#0-一句话核心答案">0. 一句话核心答案</a></li>
+<li class="toc-h2"><a href="#1-架构基线-理解后面所有结论必须先懂的事">1. 架构基线（理解后面所有结论必须先懂的事）</a></li>
+<li class="toc-h3"><a href="#1-1-macos-的三层引导命名空间-bootstrap-namespaces">1.1 macOS 的三层引导命名空间（Bootstrap Namespaces）</a></li>
+<li class="toc-h3"><a href="#1-2-macos-没有-linux-cgroup">1.2 macOS 没有 Linux cgroup</a></li>
+<li class="toc-h2"><a href="#2-场景-a-详细-多用户的保密性与安全性">2. 场景 A 详细：多用户的保密性与安全性</a></li>
+<li class="toc-h3"><a href="#2-1-文件与目录隔离">2.1 文件与目录隔离</a></li>
+<li class="toc-h3"><a href="#2-2-钥匙串-keychain-隔离">2.2 钥匙串（Keychain）隔离</a></li>
+<li class="toc-h3"><a href="#2-3-应用沙箱-app-sandbox-与-tcc">2.3 应用沙箱（App Sandbox）与 TCC</a></li>
+<li class="toc-h3"><a href="#2-4-管理员-vs-标准用户-vs-root-权限边界">2.4 管理员 vs 标准用户 vs Root 权限边界</a></li>
+<li class="toc-h3"><a href="#2-5-filevault-与-secure-token-最关键的安全机制">2.5 FileVault 与 Secure Token——最关键的安全机制</a></li>
+<li class="toc-h3"><a href="#2-6-系统级保护机制在多用户场景下">2.6 系统级保护机制在多用户场景下</a></li>
+<li class="toc-h3"><a href="#2-7-场景-a-结论速查表">2.7 场景 A 结论速查表</a></li>
+<li class="toc-h2"><a href="#3-场景-b-详细-后台进程在切换-登出时的行为">3. 场景 B 详细：后台进程在切换/登出时的行为</a></li>
+<li class="toc-h3"><a href="#3-1-fus-fast-user-switching-快速用户切换-下用户-a-进程的行为">3.1 FUS（Fast User Switching，快速用户切换）下用户 A 进程的行为</a></li>
+<li class="toc-h3"><a href="#3-2-用户-a-登出后-用户-b-登录的进程行为">3.2 用户 A 登出后 → 用户 B 登录的进程行为</a></li>
+<li class="toc-h3"><a href="#3-3-launchd-体系详解-plist-key-多用户语义">3.3 launchd 体系详解（plist key 多用户语义）</a></li>
+<li class="toc-h3"><a href="#3-4-apple-后台任务政策-macos-14-15">3.4 Apple 后台任务政策（macOS 14/15）</a></li>
+<li class="toc-h3"><a href="#3-5-场景-b-结论速查表">3.5 场景 B 结论速查表</a></li>
+<li class="toc-h2"><a href="#4-三种程序类型-两种切换路径-总速查">4. 三种程序类型 × 两种切换路径 总速查</a></li>
+<li class="toc-h2"><a href="#5-实操命令速查">5. 实操命令速查</a></li>
+<li class="toc-h2"><a href="#6-信源清单-精选">6. 信源清单（精选）</a></li>
+<li class="toc-h3"><a href="#apple-官方-apple-official-类">Apple 官方（[Apple-Official] 类）</a></li>
+<li class="toc-h3"><a href="#第三方实测-3rd-party-类">第三方实测（[3rd-Party] 类）</a></li>
+<li class="toc-h2"><a href="#7-一句话总结">7. 一句话总结</a></li>
+</ul></nav>
+  </aside>
+  <main>
+    <div class="hero">
+      <h1>macOS 多用户机制深度调研——保密性 / 安全性 / 后台进程行为</h1>
+      <div class="meta">
+        <span>📅 2026-07-04</span>
+        <span>🍎 macOS 13 Ventura / 14 Sonoma / 15 Sequoia</span>
+        <span>📚 Apple Platform Security · TN2083 · Howard Oakley · Der Flounder</span>
+        <span>🤖 Hermes Agent 调研产出</span>
+      </div>
+    </div>
+<h1 id="macos">macOS 多用户机制深度调研——保密性 / 安全性 / 后台进程行为</h1>
+<blockquote>
+<p><strong>调研日期</strong>：2026-07-04
+<strong>调研工具链</strong>：research-orchestration skill（chat 路由：LLM 自身 + 2 个并发 subagent）
+<strong>macOS 版本范围</strong>：13 Ventura / 14 Sonoma / 15 Sequoia（部分涉及 macOS 26 "Tahoe"）
+<strong>信源构成</strong>：Apple 官方文档（Platform Security Guide / TN2083 / developer.apple.com / support.apple.com）+ Howard Oakley（eclecticlight.co）+ Der Flounder（rtrouton）+ 第三方实测
+<strong>完整英文原档</strong>：
+- 场景 A 隔离安全：<code>macos-multiuser-isolation.md</code>（45 KB / 566 行 / 21 URL）
+- 场景 B 后台进程：<code>scenario_b_background_processes.md</code>（50 KB / 366 行 / 35 URL）</p>
+</blockquote>
+<hr>
+<h2 id="0">0. 一句话核心答案</h2>
+<table>
+<thead>
+<tr>
+<th>您的问题</th>
+<th>一句话答案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A1 保密性</strong>：用户二能否看到用户一的文件？</td>
+<td><strong>看不到</strong>。~/ 默认 <code>drwxr-xr-x+</code>（POSIX 0755 + ACL），目录下内容默认 700/600，非所有者没有 traverse 进内部的权限。</td>
+</tr>
+<tr>
+<td><strong>A2 钥匙串 / 应用数据 / iCloud 是否隔离？</strong></td>
+<td><strong>全部隔离</strong>。<code>login.keychain-db</code> 位于 <code>~/Library/Keychains/</code>（0600），每用户独立 user keybag 由该用户密码 + UID + xART 包裹，跨用户不可解密。TCC 数据库同样每用户独立（<code>~/Library/Application Support/com.apple.TCC/TCC.db</code>）。</td>
+</tr>
+<tr>
+<td><strong>A3 管理员能否跨用户访问？</strong></td>
+<td><strong>可以 sudo 到 root</strong>（POSIX ACL 全失效），<strong>但跑不过 FileVault</strong>——VEK（卷加密密钥）由各用户 Secure Token 独立包裹，root 在未解锁用户 A 的 FileVault 时物理上无法读出密文。</td>
+</tr>
+<tr>
+<td><strong>B1 快速用户切换</strong>：用户二登录后，用户一程序还跑吗？</td>
+<td><strong>继续跑</strong>，但 <strong>CPU/网/盘 完全可用</strong>——只是 GUI 显示、键鼠输入、音频输出切给用户二（用户一进程感知上"像显示器睡着了"）。App Nap 会判定用户一应用非前台、节流其 timer 和 I/O。</td>
+</tr>
+<tr>
+<td><strong>B2 登出后登录</strong>：用户一程序还跑吗？</td>
+<td><strong>不再跑</strong>。GUI 应用：45 秒宽限 → SIGKILL；CLI 进程：SIGHUP → SIGTERM/SIGKILL；用户级 LaunchAgent：SIGTERM → ExitTimeOut 后 SIGKILL。<strong>LaunchDaemon 完全不受影响</strong>——只跟随系统关机。</td>
+</tr>
+<tr>
+<td><strong>决定性分水岭</strong>：FUS vs 登出</td>
+<td>这是<strong>两条完全不同的路径</strong>，FUS 下用户一会话只是"切到后台"；登出下用户一会话完全销毁，所有进程接收终止信号。</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="1">1. 架构基线（理解后面所有结论必须先懂的事）</h2>
+<h3 id="11-macos-bootstrap-namespaces">1.1 macOS 的三层引导命名空间（Bootstrap Namespaces）</h3>
+<p>macOS 内核只有<strong>一个 PID 1（launchd）</strong>，但 launchd 维护<strong>三层 Mach bootstrap（启动引导）命名空间</strong>（来自 Apple TN2083 <a href="https://developer.apple.com/library/archive/technotes/tn2083/_index.html">Bootstrap Namespaces</a>）：</p>
+<ol>
+<li><strong>Global namespace（全局命名空间）</strong>：root launchd 持有，所有 LaunchDaemon 注册在此</li>
+<li><strong>Per-user namespace（每用户命名空间）</strong>：每个登录用户的 launchd 实例持有，该用户的 <code>~/Library/LaunchAgents</code>、<code>/Library/LaunchAgents</code> 注册在此</li>
+<li><strong>Per-session namespace（每会话命名空间）</strong>：每个 GUI 登录会话 / 每个 SSH 会话独占，Login Items、GUI 应用注册在此</li>
+</ol>
+<p><strong>这一架构是理解下面所有行为的基础</strong>——快速用户切换下三层共存；登出后 per-user 和 per-session 都被销毁，global 保留。</p>
+<h3 id="12-macos-linux-cgroup">1.2 macOS 没有 Linux cgroup</h3>
+<p>macOS <strong>没有 Linux cgroups / systemd slices 的等价物</strong>。最接近的是：
+- <code>ProcessType</code> plist key（系统级内核调度类）
+- <code>_ResourceCoalition</code>（每应用的资源 coalition，由 RunningBoard 跟踪）
+- Per-session bootstrap 命名空间（通信隔离，但不限制 CPU/内存）</p>
+<p>来自 <a href="https://keith.github.io/xcode-man-pages/launchd.plist.5.html">launchd.plist(5) 文档</a>。</p>
+<hr>
+<h2 id="2-a">2. 场景 A 详细：多用户的保密性与安全性</h2>
+<h3 id="21">2.1 文件与目录隔离</h3>
+<p><strong><code>/Users/&lt;username&gt;/</code> 本身的权限</strong>：</p>
+<div class="codehilite"><pre><span></span><code>drwxr-xr-x+  hoakley  staff
+ 0: group:everyone deny delete
+</code></pre></div>
+
+<ul>
+<li>POSIX：0755（owner 全部、group + other 只有 r-x）</li>
+<li>ACL：<code>0: group:everyone deny delete</code>（防 world 删除目录本身）</li>
+<li><strong>目录内部内容默认 700（目录）/ 600（文件）</strong>——这是关键的隔离来源</li>
+</ul>
+<p>实测命令（来自 Howard Oakley <a href="https://eclecticlight.co/2022/02/16/permissions-and-acls/">Permissions and ACLs</a>）：</p>
+<div class="codehilite"><pre><span></span><code>ls<span class="w"> </span>-lde<span class="w"> </span>~<span class="w">                          </span><span class="c1"># POSIX + ACL</span>
+ls<span class="w"> </span>-le<span class="w"> </span>/Users<span class="w">                      </span><span class="c1"># /Users 自身</span>
+ls<span class="w"> </span>-le<span class="w"> </span>/Users/&lt;other&gt;/Documents<span class="w">    </span><span class="c1"># 其他用户文档</span>
+diskutil<span class="w"> </span>info<span class="w"> </span>/<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;File System&quot;</span>
+diskutil<span class="w"> </span>apfs<span class="w"> </span>list
+</code></pre></div>
+
+<p><strong>其他用户能否读 <code>~/Documents</code> / <code>~/Desktop</code> / <code>~/Library</code>？</strong></p>
+<p><strong>不能</strong>。三层防御：(1) <code>~/</code> 本身的 <code>o+x</code> 仅允许 traverse 到该目录但看不到内容；(2) 子目录默认 0700；(3) 沙盒应用即使能 traverse 也受 TCC 限制。</p>
+<blockquote>
+<p><strong>关于"~/ 是 0700 吗"的精确说法</strong>：<strong><code>/</code> 自身不是 0700</strong>，但<strong>其内容默认 0700/0600</strong>——这等价于"非所有者进不去"，实际效果一致。来源：Howard Oakley 2022-02-16 <a href="https://eclecticlight.co/2022/02/16/permissions-and-acls/">Permissions and ACLs</a> + Apple Platform Security Guide § Protecting app access to user data。</p>
+</blockquote>
+<h3 id="22-keychain">2.2 钥匙串（Keychain）隔离</h3>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>机制</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>文件系统层</strong></td>
+<td><code>~/Library/Keychains/login.keychain-db</code> 权限 0600，owner = 该用户</td>
+<td>Howard Oakley <a href="https://eclecticlight.co/">Keychain History</a></td>
+</tr>
+<tr>
+<td><strong>加密层</strong></td>
+<td>每条钥匙串项用 AES-256-GCM 双密钥加密：metadata key（应用处理器缓存）+ row secret key（每次都经 Secure Enclave 派生）</td>
+<td>Apple Platform Security Guide</td>
+</tr>
+<tr>
+<td><strong>用户密钥袋层</strong></td>
+<td><code>~/Library/Keychains/&lt;UUID&gt;/user.kb</code> 由 <strong>(用户密码 + 硬件 UID + xART)</strong> 包裹</td>
+<td>Apple Platform Security Guide § User keybag</td>
+</tr>
+</tbody>
+</table>
+<p><strong>跨用户访问结论</strong>：<strong>完全不可能</strong>。即便用户 B 用 root 权限也读不出密文——密钥袋是用户 A 密码派生的，没 A 密码就是 0 字节随机数。</p>
+<p>数据保护类（来自 Apple Platform Security Guide § Data Protection classes）：</p>
+<table>
+<thead>
+<tr>
+<th>保护类</th>
+<th>Keychain 等价</th>
+<th>多用户行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Class A <code>NSFileProtectionComplete</code></td>
+<td><code>kSecAttrAccessibleWhenUnlocked</code></td>
+<td>"最后一个用户登出后，class key 被丢弃"</td>
+</tr>
+<tr>
+<td>Class B <code>NSFileProtectionCompleteUnlessOpen</code></td>
+<td>Curve25519 ECDH</td>
+<td>"只要系统有任何用户登录即可用"</td>
+</tr>
+<tr>
+<td>Class C <code>NSFileProtectionCompleteUntilFirstUserAuthentication</code></td>
+<td><code>kSecAttrAccessibleAfterFirstUnlock</code></td>
+<td>默认；首次认证后整个启动期间不解锁</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>关键引述：<strong>Apple silicon Mac 不支持 Class D</strong>——每次"登入登出"都构成安全边界（区别于 iOS 的"锁屏"）。意味着 FUS 下 Class C 数据对两个用户都持续可用；但登出登入会重新建立边界。来源：<a href="https://help.apple.com/pdf/security/en_US/apple-platform-security-guide.pdf">Apple Platform Security Guide</a>。</p>
+</blockquote>
+<h3 id="23-app-sandbox-tcc">2.3 应用沙箱（App Sandbox）与 TCC</h3>
+<p><strong>沙箱规则</strong>（Apple Platform Security Guide § App security in macOS）：</p>
+<ol>
+<li>沙盒应用不能读 <code>~/Library/Containers/</code> 之外的应用容器（除非有 <code>application-groups</code> entitlement）</li>
+<li>沙盒应用<strong>不能 traverse 进其他用户的 ~</strong>（POSIX + ACL 阻止）</li>
+<li>沙盒应用<strong>不能读 iCloud Drive / 网络卷 / 可移动卷</strong>（除非有 <code>com.apple.security.files.user-selected.*</code> 或 Full Disk Access）</li>
+<li>macOS 13.4+ 起，所有第三方 app 都有 <strong>Data Vault</strong>（内核强制）</li>
+</ol>
+<p><strong>TCC 数据库是每用户独立</strong>：</p>
+<div class="codehilite"><pre><span></span><code>~/Library/Application Support/com.apple.TCC/TCC.db          # 当前用户授权
+/Library/Application Support/com.apple.unifleetd/              # 系统级覆盖
+/Library/Application Support/com.apple.TCC/                    # 托管 Mac
+</code></pre></div>
+
+<p>来源：<a href="https://eclecticlight.co/2025/11/08/explainer-permissions-privacy-and-tcc/">Howard Oakley 2025-11-08 TCC Explainer</a> + Apple Platform Security Guide。<strong>用户 B 登录不会继承用户 A 的授权——TCC 表是登录时重新构建的</strong>。</p>
+<p>iCloud Drive 同样按用户分：缓存位于 <code>~/Library/Mobile Documents/com~apple~CloudDocs/</code>，POSIX 0700；每个用户独立 Apple ID 独立 token；FUS 下 <code>bird</code> daemon 用第二个用户的 Apple ID 重新认证。</p>
+<p><strong>Sequoia 新增</strong>：屏幕录制授权会被周期性重新弹窗询问（来自 Howard Oakley 2025-03-12 <a href="https://eclecticlight.co/2025/03/12/why-all-this-privacy-protection-an-overview/">Privacy Overview</a>）。</p>
+<h3 id="24-vs-vs-root">2.4 管理员 vs 标准用户 vs Root 权限边界</h3>
+<p>来自 <a href="https://support.apple.com/guide/mac-help/add-a-user-or-group-mtusr001/mac">Apple Support → Add a user or group</a>：</p>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>可做</th>
+<th>不能做</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>管理员（Administrator）</strong></td>
+<td>sudo（需重新认证）、为所有用户装 App、增删用户、改系统设置、跑 <code>csrutil status</code>、用自己密码解锁 FileVault</td>
+<td>改安全启动设置（需 recoveryOS）、<strong>默认不能读其他用户的文件</strong></td>
+</tr>
+<tr>
+<td><strong>标准用户（Standard）</strong></td>
+<td>为自己装 App、改个人设置</td>
+<td>sudo、增删用户、看别人的文件</td>
+</tr>
+<tr>
+<td><strong>仅共享（Sharing Only）</strong></td>
+<td>通过 SMB/AFP 远程访问共享文件</td>
+<td>本地登录、改设置</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Root 的真实能力</strong>（这是您最关心的问题）：</p>
+<ul>
+<li><strong>没 FileVault 时</strong>：root 看得见所有用户的 <code>~/Library</code>、<code>~/Documents</code>（POSIX 0700 被 UID 0 绕过，ACL 也不挡 root）。但 root 也得受 TCC 限制——TCC 是关于"app consent"的，不绑 UID。</li>
+<li><strong>有 FileVault 时</strong>：root 看得了 <strong>已经解锁的卷上的明文</strong>；卷没解锁（用户 A 锁屏或系统冷启动）时 root <strong>物理上解密不了</strong>——因为 VEK（卷加密密钥）由用户 A 的 Secure Token KEK（密钥加密密钥）包裹，没有 A 密码就没有 KEK。</li>
+</ul>
+<h3 id="25-filevault-secure-token">2.5 FileVault 与 Secure Token——最关键的安全机制</h3>
+<p>来自 Apple Platform Security Guide § Using Secure Token：</p>
+<blockquote>
+<p>"A Secure Token is a wrapped version of a key encryption key (KEK) protected by a user's password."</p>
+</blockquote>
+<p><strong>机制详解</strong>：</p>
+<ol>
+<li>APFS 卷有一个 <strong>VEK（Volume Encryption Key）</strong></li>
+<li>每个有 <strong>Secure Token</strong> 的用户用 <strong>(自己的密码 + UID + xART)</strong> 包一层 KEK，把这个 KEK 写入 VEK 之上</li>
+<li>没 Secure Token 的用户<strong>不能解密卷</strong>——因为它的密码派生不出那个 KEK</li>
+</ol>
+<p><strong>操作后果</strong>（来自 <a href="https://derflounder.wordpress.com/2018/01/20/secure-token-and-filevault-on-apple-file-system/">Der Flounder 2018-01-20</a> 实测）：</p>
+<ul>
+<li>macOS 11+ <strong>第一个登录的用户自动获得 Secure Token</strong>；后续由该用户创建的用户也自动获得</li>
+<li>命令行（<code>sysadminctl -addUser</code>）或 Active Directory mobile 用户<strong>默认没有 Secure Token</strong></li>
+<li>没有 Secure Token 的用户在<strong>预启动解锁界面看不到自己的账户</strong></li>
+<li>用户 B 即使在用户 A 解锁后能登录，<strong>冷启动后</strong>仅用户 A 能解锁</li>
+</ul>
+<p><strong>Apple Support 直接确认</strong>（来自 <a href="https://support.apple.com/guide/mac-help/use-filevault-to-encrypt-the-startup-disk-on-mac-mh11785/mac">support.apple.com/guide/mac-help/use-filevault</a>）：</p>
+<blockquote>
+<p>"If your Mac has additional users, their information is also encrypted. Users unlock the encrypted disk with their login password. If there's an Enable Users button, you must enter a user's login password before they can unlock the encrypted disk."</p>
+</blockquote>
+<p><strong>检查 Secure Token 的命令</strong>：</p>
+<div class="codehilite"><pre><span></span><code>sudo<span class="w"> </span>fdesetup<span class="w"> </span>status<span class="w">                  </span><span class="c1"># FileVault 是否启用</span>
+sudo<span class="w"> </span>fdesetup<span class="w"> </span>list<span class="w">                    </span><span class="c1"># 哪些用户被启用</span>
+sysadminctl<span class="w"> </span>-secureTokenStatus<span class="w"> </span>&lt;u&gt;<span class="w">    </span><span class="c1"># 查 Secure Token 状态</span>
+diskutil<span class="w"> </span>apfs<span class="w"> </span>listCryptoUsers<span class="w"> </span>/dev/disk1<span class="w">   </span><span class="c1"># macOS 14+ 列出 crypto user</span>
+</code></pre></div>
+
+<h3 id="26">2.6 系统级保护机制在多用户场景下</h3>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>多用户行为</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SIP（System Integrity Protection）</strong></td>
+<td><strong>对所有进程生效</strong>。Apple 原文："macOS applies this security policy to every process running on the system, regardless of whether that process is running sandboxed or with administrative privileges."</td>
+<td>Apple Platform Security Guide § Restricting components</td>
+</tr>
+<tr>
+<td><strong>Gatekeeper / 公证（Notarization）</strong></td>
+<td><strong>按文件评估，不按用户</strong>。规则全机一致（可通过 MDM 配置或系统设置调整）</td>
+<td>Apple Platform Security Guide</td>
+</tr>
+<tr>
+<td><strong>XProtect / MRT</strong></td>
+<td><strong>系统级服务</strong>（XProtectService），自动对所有用户生效</td>
+<td>Apple Platform Security Guide</td>
+</tr>
+</tbody>
+</table>
+<h3 id="27-a">2.7 场景 A 结论速查表</h3>
+<table>
+<thead>
+<tr>
+<th>您的问题</th>
+<th>答案</th>
+<th>信源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用户 B 能看用户 A 的 ~/Documents / Desktop / Library？</td>
+<td><strong>不能</strong>（默认 0700 + ACL + TCC 三层防御）</td>
+<td>Howard Oakley + Apple-Official</td>
+</tr>
+<tr>
+<td>login.keychain 对其他用户可见？</td>
+<td><strong>不可见</strong>（0600 + 加密）</td>
+<td>Apple-Official</td>
+</tr>
+<tr>
+<td>Keychain 跨用户访问？</td>
+<td><strong>不可能</strong>（user keybag 由该用户密码 + 硬件 UID 包裹）</td>
+<td>Apple Platform Security Guide § User keybag</td>
+</tr>
+<tr>
+<td>TCC 数据库是全机共享还是每用户？</td>
+<td><strong>每用户独立</strong>（<code>~/Library/Application Support/com.apple.TCC/TCC.db</code>）</td>
+<td>Howard Oakley + Apple-Official</td>
+</tr>
+<tr>
+<td>管理员能不能 sudo 后看其他用户？</td>
+<td><strong>能看未加密卷上</strong>；<strong>看不了 FileVault 未解锁卷</strong></td>
+<td>Der Flounder + Apple-Official</td>
+</tr>
+<tr>
+<td>FileVault 每个用户独立加密？</td>
+<td><strong>VEK 单一，KEK 按 Secure Token 用户独立包裹</strong></td>
+<td>Apple Platform Security Guide § Using Secure Token</td>
+</tr>
+<tr>
+<td>没 Secure Token 的用户能 FileVault 解锁？</td>
+<td><strong>不能</strong>——预启动界面都不会显示其账户</td>
+<td>Der Flounder 2018 实测</td>
+</tr>
+<tr>
+<td>SIP 对所有用户生效？</td>
+<td><strong>是，对全机所有进程生效</strong></td>
+<td>Apple Platform Security Guide（原文引用）</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="3-b">3. 场景 B 详细：后台进程在切换/登出时的行为</h2>
+<h3 id="31-fusfast-user-switching-a">3.1 FUS（Fast User Switching，快速用户切换）下用户 A 进程的行为</h3>
+<p><strong>Howard Oakley 原文</strong>（来自 <a href="https://eclecticlight.co/2023/03/22/fast-user-switching-how-it-works-and-when-to-use-it/">Fast User Switching 2023-03-22</a>）：</p>
+<blockquote>
+<p>"When you use FUS, your Mac doesn't log out of the current user account, but additionally logs into the other user account, leaving it with <strong>three active accounts</strong>: root, the first user, and the second."</p>
+</blockquote>
+<p><strong>所以关键事实是：FUS 下用户 A 的会话继续存在，只是切到后台。</strong></p>
+<table>
+<thead>
+<tr>
+<th>程序类别</th>
+<th>FUS 下的行为</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GUI 前台应用（用户 A）</strong></td>
+<td><strong>继续跑</strong>。"Processes still running for the first user will continue, but can't receive local keyboard/mouse/trackpad input, and don't output to the display or audio; as far as those processes are concerned, it's as if the display has gone to sleep. All user input and output is thus connected to the second user."</td>
+<td>Howard Oakley（原文引用）</td>
+</tr>
+<tr>
+<td><strong>CLI / SSH 进程（用户 A）</strong></td>
+<td><strong>继续跑</strong>。每个 SSH 会话属于用户 A per-user 命名空间下的 per-session 子命名空间。CPU / 网 / 盘 全通。sshd 的 ssh.plist 用 <code>SessionCreate=true</code>。</td>
+<td>TN2083</td>
+</tr>
+<tr>
+<td><strong>用户级 LaunchAgent（<code>~/Library/LaunchAgents/</code>）</strong></td>
+<td><strong>继续在用户 A 的 per-user launchd 下运行</strong>，不受 FUS 影响。</td>
+<td>TN2083 + Designing Daemons</td>
+</tr>
+<tr>
+<td><strong>系统级 LaunchAgent（<code>/Library/LaunchAgents/</code>）</strong></td>
+<td>每个用户一份实例。用户 A 那份继续跑；用户 B 登录后用户 B 的副本也会 spawn。</td>
+<td>TN2083</td>
+</tr>
+<tr>
+<td><strong>LaunchDaemon（<code>/Library/LaunchDaemons</code>、<code>/System/Library/LaunchDaemons</code>）</strong></td>
+<td><strong>完全不受 FUS 影响</strong>。系统级、root 拥有、不知道哪个用户在前面。</td>
+<td>TN2083 + CreatingLaunchdJobs</td>
+</tr>
+<tr>
+<td><strong>登录项（Login Items）</strong></td>
+<td>仍在用户 A GUI 会话里加载，UI 不可见。</td>
+<td>TN2083</td>
+</tr>
+</tbody>
+</table>
+<p><strong>资源访问（FUS 下用户 A）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>是否可用</th>
+<th>信源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CPU</strong></td>
+<td>✅ <strong>完全可用</strong>，无文档化的 per-session CPU 配额；只有 <code>ProcessType=Background</code> 或显式 ThrottleInterval 才有节流。</td>
+<td>launchd.plist(5)</td>
+</tr>
+<tr>
+<td><strong>网络</strong></td>
+<td>✅ 可用；BSD socket 不被 FUS 限制；网络策略由 socketfilterfw（ALF）和 entitlement 管。</td>
+<td>TN2083</td>
+</tr>
+<tr>
+<td><strong>磁盘 I/O</strong></td>
+<td>✅ 可用；走 POSIX credentials（UID/GID），不变。</td>
+<td>TN2083</td>
+</tr>
+<tr>
+<td><strong>内存</strong></td>
+<td>❌ 不主动回收。用户 A 的常驻集被保留——所以 FUS 比 logout-then-login 内存消耗大。</td>
+<td>Howard Oakley</td>
+</tr>
+<tr>
+<td><strong>WindowServer / 显示</strong></td>
+<td>❌ 用户 A 的 app 不能画到屏幕——WindowServer 连接被切走。</td>
+<td>TN2083</td>
+</tr>
+<tr>
+<td><strong>音频</strong></td>
+<td>⚠️ 不确定。CoreAudio HAL 可跨会话混音，但实际取决于 app 的 <code>kAudioDevicePropertyHogMode</code> 策略。Howard Oakley 文章评论中有实测分歧（iTunes/Music 停，YouTube 不停）。</td>
+<td>Howard Oakley（评论）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>节流机制（FUS 下）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>行为</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>App Nap</strong></td>
+<td><strong>用户 A 的 app 触发 App Nap</strong>（因为它不是自己会话的前台 app）。CPU 优先级降、定时器节流、I/O 节流。Apple 原文："an app is a candidate for App Nap if: It isn't the foreground app…"</td>
+<td>Apple App Nap 文档</td>
+</tr>
+<tr>
+<td><strong>DAS-CTS</strong></td>
+<td>系统级后台调度器（10.10 Yosemite 起），对系统服务（Time Machine / mediaanalysisd / XProtect Remediator）统一调度，与用户无关。</td>
+<td>Howard Oakley</td>
+</tr>
+<tr>
+<td><strong><code>ProcessType=Background</code></strong></td>
+<td>launchd plist key；轻量 CPU + I/O 节流。</td>
+<td>launchd.plist(5)</td>
+</tr>
+<tr>
+<td><strong><code>ThrottleInterval</code></strong></td>
+<td>默认 10 秒。</td>
+<td>launchd.plist(5)</td>
+</tr>
+<tr>
+<td><strong><code>NSProcessInfo thermalState</code></strong></td>
+<td>进程级 API（<code>nominal/fair/serious/critical</code>），由 app 自己节流；不是 per-session。</td>
+<td>Apple ProcessInfo 文档</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-a-b">3.2 用户 A 登出后 → 用户 B 登录的进程行为</h3>
+<p><strong>登出状态机</strong>（来自 Howard Oakley <a href="https://eclecticlight.co/2023/03/18/loginwindow-does-more-than-log-you-in/">loginwindow 2023-03-18</a>）：</p>
+<div class="codehilite"><pre><span></span><code>LogoutConfirmation → StartGUIAppsQuit → AllGUIAppsQuit → 
+StartFinderQuit → FinderQuit → PointOfNoReturn → 
+StartUIElementsQuit → StartDockQuit → StartWindowManagerQuit → 
+FinalItemsBeforeSessionLogoutd → Startsessionlogoutd → LogoutComplete
+</code></pre></div>
+
+<p><strong>正常 ~0.5 秒</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>程序类别</th>
+<th>用户 A 登出后的命运</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GUI 应用（用户 A）</strong></td>
+<td><code>applicationShouldTerminate</code> → Apple Event quit → <strong>45 秒宽限</strong> → 仍存活则 SIGKILL。<strong>所有未保存数据可能丢失</strong>。</td>
+<td>Howard Oakley</td>
+</tr>
+<tr>
+<td><strong>CLI / SSH 进程（用户 A）</strong></td>
+<td>Per-session 命名空间销毁 → SIGHUP（默认死，除非 nohup） → SIGTERM/SIGKILL。<strong>内存数据全丢</strong>。</td>
+<td>TN2083 + Unix session-leader 语义</td>
+</tr>
+<tr>
+<td><strong>用户级 LaunchAgent（<code>~/Library/LaunchAgents/</code>）</strong></td>
+<td><strong>SIGTERM</strong> → ExitTimeOut 后 <strong>SIGKILL</strong>。用户 A 的 per-user launchd 退出。</td>
+<td>CreatingLaunchdJobs + launchd.plist(5) ExitTimeOut</td>
+</tr>
+<tr>
+<td><strong>系统级 LaunchAgent（<code>/Library/LaunchAgents/</code>）</strong></td>
+<td>同样在用户 A 会话销毁时被 SIGTERM。用户 B 登录后会在用户 B 的 per-user launchd 下重新 spawn。</td>
+<td>TN2083 + CreatingLaunchdJobs</td>
+</tr>
+<tr>
+<td><strong>LaunchDaemon</strong></td>
+<td><strong>完全存活</strong>。只在系统关机时收 SIGTERM。</td>
+<td>TN2083 + CreatingLaunchdJobs</td>
+</tr>
+<tr>
+<td><strong>登录项</strong></td>
+<td>被 loginwindow 按 AppleEvent/kill 流程在 LogoutComplete 之前 kill。</td>
+<td>Howard Oakley</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Apple 官方原文</strong>（CreatingLaunchdJobs）：</p>
+<blockquote>
+<p>"When the user logs out, it sends a SIGTERM signal to all of the user agents that it started."
+"When the system shuts down, it sends a SIGTERM signal to all of the daemons that it started."</p>
+</blockquote>
+<p><strong>数据丢失窗口</strong>：</p>
+<ul>
+<li>Apple 给 GUI app <strong>45 秒</strong>宽限期</li>
+<li>超过则硬 kill——期间未保存到磁盘的数据丢失</li>
+<li>应用可声明 <code>NSSupportsSuddenTermination</code> 或调用 <code>enableSuddenTermination()</code> —— 表示"我没未保存状态"，系统可直接 kill 不通知</li>
+<li>来源：<a href="https://docs.developer.apple.com/tutorials/data/documentation/foundation/processinfo.md">Apple ProcessInfo 文档</a> § Support Sudden Termination</li>
+</ul>
+<p><strong>ExitTimeOut 默认值</strong>：</p>
+<blockquote>
+<p>"system-defined. The value zero is interpreted as infinity and should not be used, as it can stall system shutdown forever."</p>
+</blockquote>
+<p>所以 launchd 一定会 SIGKILL，只是不立即。</p>
+<h3 id="33-launchd-plist-key">3.3 launchd 体系详解（plist key 多用户语义）</h3>
+<p><strong>plist 文件位置与归属</strong>（来自 <a href="https://keith.github.io/xcode-man-pages/launchd.plist.5.html">launchd.plist(5)</a> FILES + TN2083）：</p>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>类型</th>
+<th>加载方</th>
+<th>运行空间</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/System/Library/LaunchDaemons/</code></td>
+<td>系统 LaunchDaemon</td>
+<td>root launchd（PID 1）</td>
+<td>全局命名空间</td>
+</tr>
+<tr>
+<td><code>/Library/LaunchDaemons/</code></td>
+<td>第三方 LaunchDaemon</td>
+<td>root launchd</td>
+<td>全局命名空间</td>
+</tr>
+<tr>
+<td><code>/System/Library/LaunchAgents/</code></td>
+<td>系统 LaunchAgent</td>
+<td>per-user launchd</td>
+<td>该用户的命名空间</td>
+</tr>
+<tr>
+<td><code>/Library/LaunchAgents/</code></td>
+<td>第三方 LaunchAgent（所有用户）</td>
+<td>per-user launchd</td>
+<td>每个登录用户各一份</td>
+</tr>
+<tr>
+<td><code>~/Library/LaunchAgents/</code></td>
+<td>第三方 LaunchAgent（单用户）</td>
+<td>该用户的 per-user launchd</td>
+<td>仅该用户</td>
+</tr>
+<tr>
+<td><code>App.app/Contents/Library/LaunchAgents/</code></td>
+<td>SMAppService 注册（macOS 13+）</td>
+<td>per-user launchd</td>
+<td>该用户；代码签名保护</td>
+</tr>
+<tr>
+<td><code>/private/var/db/ManagedConfigurationFiles/BackgroundTaskServices/LaunchAgents/</code></td>
+<td>DDM-注册（macOS 15+）</td>
+<td>Managed Configuration</td>
+<td>该用户</td>
+</tr>
+</tbody>
+</table>
+<p><strong>FUS 下 vs 登出下 的 launchd 行为对比</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>FUS（用户 B 登录，用户 A 不动）</th>
+<th>登出（用户 A 主动登出）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LaunchDaemon</td>
+<td><strong>不受影响</strong></td>
+<td><strong>不受影响</strong>（只在关机收 SIGTERM）</td>
+</tr>
+<tr>
+<td>用户级 LaunchAgent</td>
+<td>继续在用户 A per-user launchd 下运行</td>
+<td><strong>SIGTERM → ExitTimeOut 后 SIGKILL</strong></td>
+</tr>
+<tr>
+<td>系统级 LaunchAgent</td>
+<td>用户 A 那份继续；用户 B 那份会 spawn</td>
+<td>用户 A 那份 SIGTERM；用户 B 登录后 spawn</td>
+</tr>
+<tr>
+<td>登录项</td>
+<td>仍在用户 A GUI 会话</td>
+<td>被 loginwindow 按 logout 状态机 kill</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键 plist key</strong>（multi-user 角度）：</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>语义</th>
+<th>多用户影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>KeepAlive</code></td>
+<td>bool 或 dict；true 表示进程退出时重启。"This key implicitly implies RunAtLoad."</td>
+<td>用户 A 登出时该 agent 被 SIGTERM；如果没 opt-in to 优雅退出，KeepAlive 帮不到忙（per-user launchd 整个退出了）</td>
+</tr>
+<tr>
+<td><code>RunAtLoad</code></td>
+<td>加载时启动一次。Apple 自家建议："avoided, as speculative job launches have an adverse effect on system-boot and user-login scenarios."</td>
+<td>用户登录时启动；用户登出时 SIGTERM</td>
+</tr>
+<tr>
+<td><code>LimitLoadToSessionType</code></td>
+<td>可取 <code>Aqua</code>（GUI 登录）/ <code>StandardIO</code>（SSH）/ <code>Background</code> / <code>LoginWindow</code></td>
+<td>决定该 agent 在哪种会话加载——FUS 下两个用户可能各加载一份</td>
+</tr>
+<tr>
+<td><code>ProcessType</code></td>
+<td><code>Background</code> / <code>Standard</code> / <code>Adaptive</code> / <code>Interactive</code>；"The system will apply resource limits based on what kind of job it is."</td>
+<td>决定内核调度类；与用户无关</td>
+</tr>
+<tr>
+<td><code>ThrottleInterval</code></td>
+<td>默认 10 秒；启动频率上限</td>
+<td>与用户无关</td>
+</tr>
+<tr>
+<td><code>ExitTimeOut</code></td>
+<td>SIGTERM 与 SIGKILL 间秒数；默认 system-defined</td>
+<td>用户登出时的死缓时间</td>
+</tr>
+<tr>
+<td><code>EnablePressuredExit</code></td>
+<td>内存压力下可被 kill</td>
+<td>与用户无关</td>
+</tr>
+<tr>
+<td><code>SessionCreate</code></td>
+<td>创建新 audit session（sshd 用）</td>
+<td>决定 SSH 会话是否独立</td>
+</tr>
+<tr>
+<td><code>Sockets</code></td>
+<td>launchd 注册监听 socket，把 FD 交给 job</td>
+<td>与用户无关</td>
+</tr>
+<tr>
+<td><code>SocketsOnly</code></td>
+<td><strong>当前 launchd.plist(5) 文档已无此 key</strong>（之前语义为"仅在 socket 有 client 时运行"）</td>
+<td>当前不可用</td>
+</tr>
+<tr>
+<td><code>UserName</code></td>
+<td>"Only applicable for services that are loaded into the privileged system domain."</td>
+<td>仅用于 LaunchDaemon</td>
+</tr>
+<tr>
+<td><code>AbandonProcessGroup</code></td>
+<td>设为 true 时不杀同 process group 的进程</td>
+<td>与用户无关</td>
+</tr>
+<tr>
+<td><code>AssociatedBundleIdentifiers</code></td>
+<td>让 Ventura+ Login Items UI 正确显示归属</td>
+<td>UI 用，与运行行为无关</td>
+</tr>
+<tr>
+<td><code>Disabled</code></td>
+<td>launchctl-level on/off；持久化到 <code>/var/db/com.apple.xpc.launchd/disabled.plist</code></td>
+<td>与用户无关</td>
+</tr>
+</tbody>
+</table>
+<h3 id="34-apple-macos-1415">3.4 Apple 后台任务政策（macOS 14/15）</h3>
+<p><strong>重要事实：BGTaskScheduler 是 iOS 专用，macOS 上没有</strong>。</p>
+<blockquote>
+<p>macOS 用 launchd + DAS-CTS（Duet Activity Scheduler + Centralized Task Scheduling）做后台任务。BGTaskScheduler（<code>BGAppRefreshTask</code> / <code>BGProcessingTask</code>）在原生 macOS 上不可用，仅限 iOS/iPadOS。来源：<a href="https://eclecticlight.co/2025/01/25/a-brief-history-of-scheduled-tasks/">Howard Oakley 2025-01-25</a>。</p>
+</blockquote>
+<p><strong>DAS-CTS</strong>：10.10 Yosemite 起，Apple 的系统级后台调度器（用于 Time Machine、mediaanalysisd、XProtect Remediator）。Howard Oakley 原文："scoring takes into account battery, CPU, thermal, network, etc.; DAS admits 'conditions are deteriorating' in the log when it refuses to dispatch."</p>
+<p><strong>Sequoia 新增</strong>：DDM（Declarative Device Management）服务后台任务，plist 和可执行文件在 <code>/private/var/db/ManagedConfigurationFiles/BackgroundTaskServices/</code> 下，受 tamper-resistant 目录保护。来源：<a href="https://derflounder.wordpress.com/2025/06/10/deploying-service-background-tasks-using-blueprints-in-jamf-pro/">Der Flounder 2025-06-10</a>。</p>
+<p><strong>App Nap 完整规则</strong>（来自 Apple App Nap 文档）：</p>
+<ul>
+<li>候选条件：不是前台 app；最近没在可见窗口更新内容；不可听；没持有 IOKit power / NSProcessInfo assertion</li>
+<li>节流内容：CPU 优先级降；定时器节流；I/O 节流</li>
+<li>唤醒条件：app 切到前台 / 收到 XPC 消息 / 收到 Apple event</li>
+</ul>
+<h3 id="35-b">3.5 场景 B 结论速查表</h3>
+<table>
+<thead>
+<tr>
+<th>您的问题</th>
+<th>答案</th>
+<th>信源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FUS 下用户 A 的程序还跑吗？</td>
+<td><strong>跑</strong>——但只是 GUI/键鼠/音频切走，CPU/网/盘全通</td>
+<td>Howard Oakley（原文引用）</td>
+</tr>
+<tr>
+<td>FUS 下用户 A 的 CLI 进程？</td>
+<td><strong>继续跑</strong>——属于 per-session 命名空间，UID/GID 不变</td>
+<td>TN2083</td>
+</tr>
+<tr>
+<td>FUS 下用户 A 的 LaunchAgent？</td>
+<td><strong>继续跑</strong>——per-user launchd 实例还活着</td>
+<td>TN2083 + Designing Daemons</td>
+</tr>
+<tr>
+<td>FUS 下 LaunchDaemon？</td>
+<td><strong>完全不受影响</strong>——所有用户都共用一个 daemon</td>
+<td>TN2083 + CreatingLaunchdJobs</td>
+</tr>
+<tr>
+<td>FUS 下用户 A 的 GUI 应用会被节流吗？</td>
+<td><strong>会触发 App Nap</strong>（不是自己会话的前台 app）</td>
+<td>Apple App Nap 文档</td>
+</tr>
+<tr>
+<td>登出后用户 A 的 GUI 应用？</td>
+<td>45 秒宽限 → SIGKILL；<strong>未保存数据可能丢失</strong></td>
+<td>Howard Oakley</td>
+</tr>
+<tr>
+<td>登出后用户 A 的 LaunchAgent？</td>
+<td>SIGTERM → ExitTimeOut 后 SIGKILL</td>
+<td>CreatingLaunchdJobs</td>
+</tr>
+<tr>
+<td>登出后 LaunchDaemon？</td>
+<td><strong>完全不受影响</strong>——只有系统关机才收 SIGTERM</td>
+<td>Apple-Official</td>
+</tr>
+<tr>
+<td>macOS 有 Linux cgroup 吗？</td>
+<td><strong>没有</strong>——最接近的是 <code>ProcessType</code> 内核调度类 + RunningBoard coalition + per-session 命名空间</td>
+<td>Apple + Howard Oakley</td>
+</tr>
+<tr>
+<td>BGTaskScheduler 在 macOS 上能用吗？</td>
+<td><strong>不能用</strong>——是 iOS 专用</td>
+<td>Howard Oakley 2025-01-25</td>
+</tr>
+<tr>
+<td>登出时数据丢失风险？</td>
+<td>GUI app 45 秒；未保存 = 丢</td>
+<td>Howard Oakley + Apple ProcessInfo</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="4">4. 三种程序类型 × 两种切换路径 总速查</h2>
+<table>
+<thead>
+<tr>
+<th>程序类型</th>
+<th>FUS 后</th>
+<th>登出后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GUI 应用（用户 A）</strong></td>
+<td>继续跑；无输入输出；App Nap 触发；<strong>音频看 app 实现</strong></td>
+<td>AppleEvent 通知；45 秒宽限；SIGKILL；<strong>未保存数据丢</strong></td>
+</tr>
+<tr>
+<td><strong>CLI / SSH 进程（用户 A）</strong></td>
+<td>继续跑；CPU/网/盘全通；属于独立 per-session 命名空间</td>
+<td>SIGHUP → SIGTERM/SIGKILL；<strong>内存数据全丢</strong></td>
+</tr>
+<tr>
+<td><strong>用户级 LaunchAgent（<code>~/Library/LaunchAgents/</code>）</strong></td>
+<td>继续跑</td>
+<td>SIGTERM → ExitTimeOut 后 SIGKILL</td>
+</tr>
+<tr>
+<td><strong>系统级 LaunchAgent（<code>/Library/LaunchAgents/</code>）</strong></td>
+<td>用户 A 那份继续；用户 B 登录时再 spawn 一份</td>
+<td>用户 A 那份 SIGTERM；用户 B 登录后 spawn</td>
+</tr>
+<tr>
+<td><strong>LaunchDaemon</strong></td>
+<td>完全不受影响</td>
+<td>完全不受影响</td>
+</tr>
+<tr>
+<td><strong>登录项</strong></td>
+<td>仍在用户 A GUI 会话</td>
+<td>被 loginwindow logout 状态机 kill</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5">5. 实操命令速查</h2>
+<p><strong>场景 A 隔离安全</strong>：</p>
+<div class="codehilite"><pre><span></span><code>ls<span class="w"> </span>-lde<span class="w"> </span>~<span class="w">                               </span><span class="c1"># POSIX + ACL</span>
+ls<span class="w"> </span>-le<span class="w"> </span>/Users<span class="w">                           </span><span class="c1"># /Users 自身</span>
+ls<span class="w"> </span>-le<span class="w"> </span>/Users/&lt;other&gt;/Documents<span class="w">         </span><span class="c1"># 其他用户文档</span>
+diskutil<span class="w"> </span>info<span class="w"> </span>/<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;File System&quot;</span>
+diskutil<span class="w"> </span>apfs<span class="w"> </span>list
+sudo<span class="w"> </span>fdesetup<span class="w"> </span>status<span class="w">                    </span><span class="c1"># FileVault 状态</span>
+sudo<span class="w"> </span>fdesetup<span class="w"> </span>list<span class="w">                      </span><span class="c1"># 哪些用户被启用</span>
+sysadminctl<span class="w"> </span>-secureTokenStatus<span class="w"> </span>&lt;u&gt;<span class="w">      </span><span class="c1"># Secure Token 状态</span>
+diskutil<span class="w"> </span>apfs<span class="w"> </span>listCryptoUsers<span class="w"> </span>/dev/disk1<span class="w">  </span><span class="c1"># 列出 crypto user</span>
+csrutil<span class="w"> </span>status<span class="w">                          </span><span class="c1"># SIP 状态</span>
+sqlite3<span class="w"> </span>~/Library/Application<span class="se">\ </span>Support/com.apple.TCC/TCC.db<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;SELECT client, service, auth_value FROM access;&#39;</span>
+tccutil<span class="w"> </span>reset<span class="w"> </span>All<span class="w"> </span>com.example.myapp
+</code></pre></div>
+
+<p><strong>场景 B 后台进程</strong>：</p>
+<div class="codehilite"><pre><span></span><code>launchctl<span class="w"> </span>list<span class="w">                          </span><span class="c1"># 当前用户的 launchd 加载的所有 job</span>
+launchctl<span class="w"> </span>print<span class="w"> </span>user/<span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="w">           </span><span class="c1"># per-user launchd 详细状态</span>
+launchctl<span class="w"> </span>print<span class="w"> </span>system<span class="w">                  </span><span class="c1"># 全局 launchd</span>
+launchctl<span class="w"> </span>print<span class="w"> </span>gui/<span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="w">            </span><span class="c1"># GUI 会话 launchd</span>
+ps<span class="w"> </span>-axo<span class="w"> </span>pid,user,command<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>&lt;name&gt;<span class="w">  </span><span class="c1"># 看进程是否还活着</span>
+log<span class="w"> </span>show<span class="w"> </span>--predicate<span class="w"> </span><span class="s1">&#39;subsystem == &quot;com.apple.launchd&quot;&#39;</span><span class="w"> </span>--last<span class="w"> </span>5m
+</code></pre></div>
+
+<hr>
+<h2 id="6">6. 信源清单（精选）</h2>
+<h3 id="apple-apple-official">Apple 官方（[Apple-Official] 类）</h3>
+<ul>
+<li><a href="https://help.apple.com/pdf/security/en_US/apple-platform-security-guide.pdf">Apple Platform Security Guide (May 2025)</a> — 引用 35+ 处</li>
+<li><a href="https://developer.apple.com/library/archive/technotes/tn2083/_index.html">TN2083 — Daemons and Services: Bootstrap Namespaces</a></li>
+<li><a href="https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html">Daemons and Services Programming Guide — Creating Launchd Jobs</a></li>
+<li><a href="https://keith.github.io/xcode-man-pages/launchd.plist.5.html">launchd.plist(5) man page</a></li>
+<li><a href="https://developer.apple.com/library/archive/documentation/Performance/Conceptual/power_efficiency_guidelines_osx/AppNap.html">App Nap 文档</a></li>
+<li><a href="https://docs.developer.apple.com/tutorials/data/documentation/foundation/processinfo.md">ProcessInfo / Sudden Termination / Thermal State 文档</a></li>
+<li><a href="https://developer.apple.com/documentation/security/protecting-user-data-with-app-sandbox">App Sandbox 文档</a></li>
+<li><a href="https://support.apple.com/guide/mac-help/add-a-user-or-group-mtusr001/mac">Apple Support → Add a user or group</a></li>
+<li><a href="https://support.apple.com/guide/mac-help/use-filevault-to-encrypt-the-startup-disk-on-mac-mh11785/mac">Apple Support → Use FileVault to encrypt the startup disk</a></li>
+</ul>
+<h3 id="3rd-party">第三方实测（[3rd-Party] 类）</h3>
+<ul>
+<li>Howard Oakley（橡树实验室，eclecticlight.co）—— 引用 60+ 处：</li>
+<li><a href="https://eclecticlight.co/2023/03/22/fast-user-switching-how-it-works-and-when-to-use-it/">Fast User Switching 2023-03-22</a></li>
+<li><a href="https://eclecticlight.co/2023/03/18/loginwindow-does-more-than-log-you-in/">loginwindow 2023-03-18</a></li>
+<li><a href="https://eclecticlight.co/2022/02/16/permissions-and-acls/">Permissions and ACLs 2022-02-16</a></li>
+<li><a href="https://eclecticlight.co/2025/03/12/why-all-this-privacy-protection-an-overview/">Privacy Overview 2025-03-12</a></li>
+<li><a href="https://eclecticlight.co/2025/11/08/explainer-permissions-privacy-and-tcc/">TCC Explainer 2025-11-08</a></li>
+<li><a href="https://eclecticlight.co/2025/10/18/explainer-filevault-2/">FileVault Explainer 2025-10-18</a></li>
+<li><a href="https://eclecticlight.co/2023/02/16/how-ventura-is-changing-login-and-background-items/">Ventura Login/Background changes 2023-02-16</a></li>
+<li><a href="https://eclecticlight.co/2023/07/11/how-to-fix-background-activities-that-stop-running/">DAS-CTS / Background Activities 2023-07-11</a></li>
+<li><a href="https://eclecticlight.co/2025/07/10/what-does-runningboard-do-1-app-launching/">RunningBoard 2025-07-10</a></li>
+<li>Der Flounder（rtrouton）—— 引用 10+ 处：</li>
+<li><a href="https://derflounder.wordpress.com/2018/01/20/secure-token-and-filevault-on-apple-file-system/">Secure Token and FileVault on Apple File System 2018-01-20</a></li>
+<li><a href="https://derflounder.wordpress.com/2018/05/10/detecting-if-a-logged-in-user-on-a-filevault-encrypted-mac-has-a-secure-token-associated-with-their-account/">Detecting Secure Token 2018-05-10</a></li>
+<li><a href="https://derflounder.wordpress.com/2025/06/10/deploying-service-background-tasks-using-blueprints-in-jamf-pro/">Deploying Service Background Tasks via Jamf Pro 2025-06-10</a></li>
+</ul>
+<hr>
+<h2 id="7">7. 一句话总结</h2>
+<blockquote>
+<p>macOS 的多用户隔离<strong>默认就到位</strong>（POSIX 0700 + ACL + TCC + 加密 keybag + per-user launchd 命名空间）——管理员不 sudo 看不见别用户文件，sudo 到 root 看得见未加密卷但穿不过 FileVault。<strong>后台进程的关键分水岭是 FUS（Fast User Switching）vs 登出再登录</strong>：FUS 下用户一的所有进程继续跑、CPU/网/盘全通，仅 GUI/键鼠/音频切走；登出后用户一的所有进程被 AppleEvent 通知 / SIGTERM / 45 秒宽限后 SIGKILL，仅 LaunchDaemon（系统级守护进程）完全不受影响。尊主如果想让"用户一跑程序 → 用户二登录 → 程序仍继续跑"——用 <strong>FUS</strong>，不要让用户一登出。</p>
+</blockquote>
+    <div class="footer">
+      <p>本页面由 Hermes Agent 在 Android Termux 环境生成 · 2026-07-04</p>
+      <p>调研信源全部为 Apple 官方文档 + 权威第三方实测（Howard Oakley / Der Flounder）</p>
+    </div>
+  </main>
+</div>
+<a href="#top" class="back-to-top" id="backToTop" title="回到顶部">↑</a>
+<script>
+  // 显示 / 隐藏回到顶部按钮
+  const btn = document.getElementById('backToTop');
+  window.addEventListener('scroll', () => {
+    if (window.scrollY > 600) btn.classList.add('visible');
+    else btn.classList.remove('visible');
+  });
+  // 平滑滚动到顶部
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+</script>
+</body>
+</html>
